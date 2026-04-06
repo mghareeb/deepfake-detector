@@ -1,6 +1,6 @@
 ---
 title: Deepfake Detector
-emoji:🛡️
+emoji: "🛡️"
 colorFrom: indigo
 colorTo: cyan
 sdk: docker
