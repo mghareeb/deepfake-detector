@@ -1,0 +1,27 @@
+@import "tailwindcss";
+
+@theme {
+  --font-sans: "Inter", ui-sans-serif, system-ui, sans-serif;
+  --color-brand: #00d4ff;
+  --color-brand-dim: rgba(0, 212, 255, 0.15);
+  --color-surface: rgba(255, 255, 255, 0.04);
+  --color-surface-hover: rgba(255, 255, 255, 0.08);
+  --color-fake: #ff4757;
+  --color-real: #2ed573;
+  --color-freq: #a273ff;
+}
+
+body {
+  background: linear-gradient(135deg, #0a0a14 0%, #111827 50%, #0f172a 100%);
+  min-height: 100vh;
+}
+
+@keyframes spin-slow {
+  to { transform: rotate(360deg); }
+}
+
+@keyframes pulse-ring {
+  0% { transform: scale(0.95); opacity: 0.7; }
+  50% { transform: scale(1); opacity: 1; }
+  100% { transform: scale(0.95); opacity: 0.7; }
+}
