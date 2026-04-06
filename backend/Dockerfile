@@ -1,7 +1,6 @@
 # ---- Deepfake Detector – Hugging Face Spaces Dockerfile ----
-# Targets the free T4-small GPU tier.  Builds on the official
-# CUDA-enabled Python base so that PyTorch can use the GPU out
-# of the box.
+# Targets the free CPU Basic tier.  Uses CPU-only PyTorch to
+# keep the image small (~1.2 GB vs ~2.5 GB with CUDA).
 
 FROM python:3.11-slim
 
@@ -20,11 +19,10 @@ ENV HOME=/home/user \
 WORKDIR /home/user/app
 
 # ── Python dependencies ──────────────────────────────────────
-# Install PyTorch with CUDA 12.1 support (matches the T4 runtime).
-# Pinned to cu121 index so the download is ~800 MB instead of 2 GB.
+# Install CPU-only PyTorch (~200 MB vs ~800 MB for CUDA build).
 COPY --chown=user:user requirements.txt .
 RUN pip install --no-cache-dir \
-        torch torchvision --index-url https://download.pytorch.org/whl/cu121 && \
+        torch torchvision --index-url https://download.pytorch.org/whl/cpu && \
     pip install --no-cache-dir -r requirements.txt
 
 # ── Application code ─────────────────────────────────────────

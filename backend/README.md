@@ -5,7 +5,7 @@ colorFrom: indigo
 colorTo: cyan
 sdk: docker
 app_port: 7860
-suggested_hardware: t4-small
+suggested_hardware: cpu-basic
 suggested_storage: small
 pinned: false
 license: mit
