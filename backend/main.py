@@ -15,7 +15,8 @@ MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 class PredictionResponse(BaseModel):
     score: float            # ensemble fake probability (0-1)
     pixel_score: float      # EfficientNet pixel-domain score
-    freq_score: float       # FFT frequency-domain score
+    freq_score: float       # FFT frequency-domain score (blended with landmark)
+    landmark_score: float   # face landmark consistency score (0=consistent, 1=anomalous)
     confidence: float
     heatmap_base64: str     # Grad-CAM overlay as base64 PNG
     face_detected: bool
@@ -84,6 +85,7 @@ async def predict_endpoint(file: UploadFile = File(...)):
         score=result["score"],
         pixel_score=result["pixel_score"],
         freq_score=result["freq_score"],
+        landmark_score=result["landmark_score"],
         confidence=result["confidence"],
         heatmap_base64=result["heatmap_base64"],
         face_detected=result["face_detected"],
