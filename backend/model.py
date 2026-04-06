@@ -23,12 +23,18 @@ IMAGENET_MEAN = [0.485, 0.456, 0.406]
 IMAGENET_STD = [0.229, 0.224, 0.225]
 FACE_MARGIN = 0.3
 # Default ensemble weights (no face detected — full image)
-PIXEL_WEIGHT_DEFAULT = 0.7
-FREQ_WEIGHT_DEFAULT = 0.3
+PIXEL_WEIGHT_DEFAULT = 0.5
+FREQ_WEIGHT_DEFAULT = 0.5
 
-# Face-specific ensemble weights (face detected — GAN artifacts more visible in freq domain)
-PIXEL_WEIGHT_FACE = 0.6
-FREQ_WEIGHT_FACE = 0.4
+# Face-specific ensemble weights — frequency analysis is far more reliable
+# than the unfine-tuned CNN, so give it dominant weight.
+PIXEL_WEIGHT_FACE = 0.4
+FREQ_WEIGHT_FACE = 0.6
+
+# Calibration: when freq_score alone is confident (>0.7), the untrained CNN
+# drags the ensemble down.  Apply a bias to compensate.
+FREQ_CONFIDENCE_THRESHOLD = 0.7
+CALIBRATION_BIAS = 0.15
 
 WEIGHTS_DIR = Path(__file__).resolve().parent / "weights"
 WEIGHTS_FILE = os.environ.get("HF_MODEL_FILE", "efficientnet_b4_deepfake.pth")
@@ -196,6 +202,70 @@ def _analyse_landmark_geometry(pts: np.ndarray) -> float:
     return float(np.clip(inconsistency, 0.0, 1.0))
 
 
+def _skin_texture_score(image_np: np.ndarray) -> float:
+    """Detect unnaturally uniform skin texture typical of GAN output.
+
+    Real skin has natural local variance from pores, fine hairs, moles,
+    and micro-wrinkles.  GANs (especially StyleGAN2) produce skin regions
+    that are locally *too smooth* — the variance within small patches is
+    abnormally low and abnormally consistent across the face.
+
+    Method:
+      1. Convert to grayscale, apply mild Gaussian blur to remove JPEG noise
+      2. Compute local variance in a sliding 7×7 window
+      3. Extract the central face region (inner 60% — avoids hair/background)
+      4. Measure the coefficient of variation of local variance
+         Low CoV → suspiciously uniform texture → likely GAN
+
+    Returns 0.0 (natural texture) to 1.0 (GAN-like uniformity).
+    """
+    gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY).astype(np.float64)
+
+    # Mild blur to suppress JPEG blocking artifacts (they add fake variance)
+    gray = cv2.GaussianBlur(gray, (3, 3), 0.8)
+
+    # Local mean and local variance via box filter
+    ksize = 7
+    local_mean = cv2.blur(gray, (ksize, ksize))
+    local_sq_mean = cv2.blur(gray ** 2, (ksize, ksize))
+    local_var = np.maximum(local_sq_mean - local_mean ** 2, 0.0)
+
+    # Extract central 60% of the image (face interior, avoiding edges)
+    h, w = local_var.shape
+    y1, y2 = int(h * 0.20), int(h * 0.80)
+    x1, x2 = int(w * 0.20), int(w * 0.80)
+    centre_var = local_var[y1:y2, x1:x2]
+
+    if centre_var.size == 0:
+        return 0.0
+
+    mean_var = centre_var.mean()
+    std_var = centre_var.std()
+
+    # --- Signal 1: overall low local variance (smooth skin) ---
+    # Real faces typically have mean local variance > 80 (8-bit grayscale).
+    # GAN faces often sit at 30-60.
+    smoothness = 1.0 / (1.0 + np.exp(0.12 * (mean_var - 50)))
+
+    # --- Signal 2: uniform variance across the face ---
+    # Real faces: texture varies a lot (forehead smooth, cheeks textured,
+    # nose oily, etc.).  GANs: variance is eerily consistent.
+    # Coefficient of variation of local variance.
+    cov = std_var / (mean_var + 1e-8)
+    # Low CoV → suspiciously uniform.  Real faces typically CoV > 1.2
+    uniformity = 1.0 / (1.0 + np.exp(8 * (cov - 0.9)))
+
+    # --- Signal 3: lack of high-frequency micro-texture ---
+    # Laplacian response measures edge density / fine detail.
+    laplacian = cv2.Laplacian(gray[y1:y2, x1:x2], cv2.CV_64F)
+    lap_std = laplacian.std()
+    # Real skin with pores etc. typically has laplacian std > 12
+    micro_texture = 1.0 / (1.0 + np.exp(0.5 * (lap_std - 8)))
+
+    score = 0.35 * smoothness + 0.35 * uniformity + 0.30 * micro_texture
+    return float(np.clip(score, 0.0, 1.0))
+
+
 def _detect_and_crop_face(image_np: np.ndarray) -> tuple[np.ndarray, bool]:
     cascade = _get_face_cascade()
     gray = cv2.cvtColor(image_np, cv2.COLOR_RGB2GRAY)
@@ -313,13 +383,17 @@ class _GradCAM:
 # ---------------------------------------------------------------------------
 
 def _frequency_score(image_np: np.ndarray) -> float:
-    """Multi-band frequency analysis via 2-D FFT.
+    """Multi-band frequency analysis tuned for GAN artifact detection.
 
-    GAN-generated faces leave spectral fingerprints across multiple
-    frequency bands.  We analyse three bands (mid, high, ultra-high)
-    and also measure spectral smoothness — GANs produce unnaturally
-    uniform magnitude spectra compared to real camera images which
-    have natural roll-off.
+    StyleGAN / StyleGAN2 / ProGAN images leave characteristic spectral
+    fingerprints:
+      1. Periodic peaks from upsampling convolutions
+      2. Abnormally high energy in mid-high frequency bands
+      3. Unnaturally smooth (isotropic) azimuthal energy distribution
+      4. Steeper-than-natural spectral roll-off in specific bands
+
+    This function analyses all four signals with aggressive thresholds
+    calibrated for thispersondoesnotexist.com (StyleGAN2) output.
 
     Returns 0.0 (natural spectrum) to 1.0 (GAN-like spectrum).
     """
@@ -328,7 +402,7 @@ def _frequency_score(image_np: np.ndarray) -> float:
     # 2-D DFT, shift DC to centre
     dft = np.fft.fft2(gray)
     shifted = np.fft.fftshift(dft)
-    magnitude = np.log1p(np.abs(shifted))  # log-magnitude for better dynamic range
+    magnitude = np.log1p(np.abs(shifted))
 
     rows, cols = gray.shape
     cy, cx = rows // 2, cols // 2
@@ -339,53 +413,81 @@ def _frequency_score(image_np: np.ndarray) -> float:
 
     total_energy = magnitude.sum() + 1e-8
 
-    # --- Multi-band energy ratios ---
-    # Band 1: mid frequencies (15-30% of Nyquist) — structural patterns
-    mid_mask = (dist > 0.15 * max_radius) & (dist <= 0.30 * max_radius)
+    # --- Multi-band energy ratios (tighter bands, lower thresholds) ---
+    # Band 1: mid (10-25%) — GAN structural patterns appear here
+    mid_mask = (dist > 0.10 * max_radius) & (dist <= 0.25 * max_radius)
     mid_energy = magnitude[mid_mask].sum() / total_energy
 
-    # Band 2: high frequencies (30-60% of Nyquist) — texture/detail
-    high_mask = (dist > 0.30 * max_radius) & (dist <= 0.60 * max_radius)
+    # Band 2: high (25-50%) — texture detail, upsampling artifacts
+    high_mask = (dist > 0.25 * max_radius) & (dist <= 0.50 * max_radius)
     high_energy = magnitude[high_mask].sum() / total_energy
 
-    # Band 3: ultra-high frequencies (>60% of Nyquist) — noise/artifacts
-    ultra_mask = dist > 0.60 * max_radius
+    # Band 3: ultra-high (>50%) — noise floor, compression artifacts
+    ultra_mask = dist > 0.50 * max_radius
     ultra_energy = magnitude[ultra_mask].sum() / total_energy
 
-    # --- Spectral smoothness (azimuthal variance) ---
-    # Real photos have natural directional variation; GANs are smoother.
-    # Compute radial profile variance in the high-freq band.
-    high_ring = magnitude.copy()
-    high_ring[~high_mask] = 0
-    # Divide into angular sectors and measure variance
-    n_sectors = 16
-    sector_energies = []
+    # --- Spectral roll-off anomaly ---
+    # Natural images: energy drops smoothly from low to high freq.
+    # GANs: mid-high band retains more energy than expected.
+    # Ratio of mid+high to total non-DC energy — GANs push this higher.
+    non_dc_mask = dist > 0.05 * max_radius
+    non_dc_energy = magnitude[non_dc_mask].sum() + 1e-8
+    rolloff_ratio = (magnitude[mid_mask].sum() + magnitude[high_mask].sum()) / non_dc_energy
+
+    # --- Azimuthal (angular) uniformity ---
+    # GANs produce unnaturally isotropic spectra; real camera images
+    # have directional bias from edges, textures, and lens optics.
+    angles = np.arctan2(y_coords - cy, x_coords - cx)
+    n_sectors = 24  # finer granularity for better sensitivity
+    sector_energies = np.zeros(n_sectors)
+    analysis_mask = (dist > 0.15 * max_radius) & (dist <= 0.60 * max_radius)
     for i in range(n_sectors):
-        angle_low = 2 * np.pi * i / n_sectors - np.pi
-        angle_high = 2 * np.pi * (i + 1) / n_sectors - np.pi
-        angles = np.arctan2(y_coords - cy, x_coords - cx)
-        sector_mask = (angles >= angle_low) & (angles < angle_high) & high_mask
-        sector_energies.append(magnitude[sector_mask].sum())
+        a_lo = 2 * np.pi * i / n_sectors - np.pi
+        a_hi = 2 * np.pi * (i + 1) / n_sectors - np.pi
+        s_mask = (angles >= a_lo) & (angles < a_hi) & analysis_mask
+        sector_energies[i] = magnitude[s_mask].sum()
 
-    sector_energies = np.array(sector_energies)
     sector_mean = sector_energies.mean() + 1e-8
-    spectral_uniformity = 1.0 - (sector_energies.std() / sector_mean)
-    spectral_uniformity = float(np.clip(spectral_uniformity, 0.0, 1.0))
+    coeff_of_var = sector_energies.std() / sector_mean
+    # Low CoV = uniform = GAN-like.  Real images: CoV typically > 0.15
+    spectral_uniformity = 1.0 / (1.0 + np.exp(40 * (coeff_of_var - 0.12)))
 
-    # --- Combine sub-scores ---
-    # Higher mid/high energy ratio with low ultra → GAN pattern
-    # Steeper sigmoid (gain=30) with lower centre (0.42) for more sensitivity
-    band_ratio = (mid_energy + high_energy) / (ultra_energy + 1e-8)
-    band_score = 1.0 / (1.0 + np.exp(-30 * (high_energy - 0.42)))
+    # --- Periodic peak detector ---
+    # StyleGAN upsampling creates periodic peaks in the radial profile.
+    # Compute radial mean profile, then measure peak-to-valley ratio.
+    n_bins = max(50, max_radius // 2)
+    radial_profile = np.zeros(n_bins)
+    bin_counts = np.zeros(n_bins)
+    dist_flat = dist.ravel()
+    mag_flat = magnitude.ravel()
+    bin_edges = np.linspace(0, max_radius, n_bins + 1)
+    for b in range(n_bins):
+        mask = (dist_flat >= bin_edges[b]) & (dist_flat < bin_edges[b + 1])
+        if mask.any():
+            radial_profile[b] = mag_flat[mask].mean()
+            bin_counts[b] = mask.sum()
 
-    # Ultra-high flatness — GANs often have more energy here than real photos
-    ultra_score = 1.0 / (1.0 + np.exp(-25 * (ultra_energy - 0.15)))
+    # Look for periodic bumps: high-pass the radial profile
+    if radial_profile.max() > 0:
+        smooth = np.convolve(radial_profile, np.ones(5) / 5, mode="same")
+        residual = radial_profile - smooth
+        peak_strength = np.abs(residual).mean() / (smooth.mean() + 1e-8)
+    else:
+        peak_strength = 0.0
+    periodic_score = 1.0 / (1.0 + np.exp(-50 * (peak_strength - 0.04)))
 
-    # Weighted combination of frequency signals
+    # --- Combine sub-scores with aggressive GAN-targeting weights ---
+    # Sigmoid thresholds lowered: centre at 0.35 (was 0.42), gain 40 (was 30)
+    band_score = 1.0 / (1.0 + np.exp(-40 * (high_energy - 0.35)))
+    ultra_score = 1.0 / (1.0 + np.exp(-35 * (ultra_energy - 0.10)))
+    rolloff_score = 1.0 / (1.0 + np.exp(-30 * (rolloff_ratio - 0.55)))
+
     freq_score = (
-        0.40 * band_score
-        + 0.30 * ultra_score
-        + 0.30 * spectral_uniformity
+        0.25 * band_score
+        + 0.15 * ultra_score
+        + 0.25 * spectral_uniformity
+        + 0.15 * rolloff_score
+        + 0.20 * periodic_score
     )
     return float(np.clip(freq_score, 0.0, 1.0))
 
@@ -485,22 +587,40 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
     heatmap_b64 = gradcam.generate(tensor, display_image, target_class=1)
 
     # --- frequency-domain score -----------------------------------------------
-    freq_score = _frequency_score(display_image)
+    freq_score_raw = _frequency_score(display_image)
 
-    # --- face landmark consistency (only when face detected) -----------------
+    # --- face-specific heuristics (only when face detected) -----------------
     landmark_score = 0.0
+    skin_score = 0.0
+    freq_score = freq_score_raw
+
     if face_detected:
         landmark_score = _landmark_consistency_score(display_image)
-        # Blend landmark signal into freq_score (boosts GAN faces)
-        freq_score = 0.65 * freq_score + 0.35 * landmark_score
+        skin_score = _skin_texture_score(display_image)
+
+        # Blend all frequency-domain signals:
+        # FFT is the primary signal; landmark & skin are boosters
+        freq_score = (
+            0.50 * freq_score_raw
+            + 0.25 * skin_score
+            + 0.25 * landmark_score
+        )
 
     # --- adaptive weighted ensemble ------------------------------------------
     if face_detected:
-        pw, fw = PIXEL_WEIGHT_FACE, FREQ_WEIGHT_FACE   # 0.6 / 0.4
+        pw, fw = PIXEL_WEIGHT_FACE, FREQ_WEIGHT_FACE   # 0.4 / 0.6
     else:
-        pw, fw = PIXEL_WEIGHT_DEFAULT, FREQ_WEIGHT_DEFAULT  # 0.7 / 0.3
+        pw, fw = PIXEL_WEIGHT_DEFAULT, FREQ_WEIGHT_DEFAULT  # 0.5 / 0.5
 
     score = pw * pixel_score + fw * freq_score
+
+    # --- calibration bias ----------------------------------------------------
+    # When frequency analysis is confident the image is fake but the
+    # untrained CNN is near 0.5, the ensemble gets pulled down unfairly.
+    # Apply a bias to correct for this.
+    if freq_score > FREQ_CONFIDENCE_THRESHOLD:
+        score += CALIBRATION_BIAS
+
     score = float(np.clip(score, 0.0, 1.0))
     confidence = max(score, 1.0 - score)
 
@@ -510,6 +630,7 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
         "freq_score": round(freq_score, 4),
         "pixel_score": round(pixel_score, 4),
         "landmark_score": round(landmark_score, 4),
+        "skin_score": round(skin_score, 4),
         "confidence": round(confidence, 4),
         "face_detected": face_detected,
     }
