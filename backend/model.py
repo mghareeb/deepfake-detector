@@ -17,7 +17,7 @@ from transformers import AutoImageProcessor, AutoModelForImageClassification
 # Constants
 # ---------------------------------------------------------------------------
 HF_MODEL_ID = os.environ.get(
-    "HF_DEEPFAKE_MODEL", "prithivMLmods/Deep-Fake-Detector-Model"
+    "HF_DEEPFAKE_MODEL", "dima806/deepfake_vs_real_image_detection"
 )
 FACE_MARGIN = 0.3
 
@@ -578,7 +578,10 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
     display_image = cv2.resize(cropped, (display_size, display_size))
 
     # --- pixel-domain score (HF deepfake model) -------------------------------
-    pil_image = Image.fromarray(cropped)
+    # Feed the FULL image to the model (not the cropped face) because
+    # deepfake detection models are trained on full images and lose
+    # accuracy when given tightly-cropped face regions.
+    pil_image = Image.fromarray(image_np)
     inputs = processor(images=pil_image, return_tensors="pt")
     pixel_values = inputs["pixel_values"].to(device)
 

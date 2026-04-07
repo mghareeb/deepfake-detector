@@ -43,7 +43,7 @@ RUN mkdir -p /home/user/.cache/huggingface && \
 
 ENV HF_HOME=/home/user/.cache/huggingface \
     TRANSFORMERS_CACHE=/home/user/.cache/huggingface \
-    HF_DEEPFAKE_MODEL="prithivMLmods/Deep-Fake-Detector-Model"
+    HF_DEEPFAKE_MODEL="dima806/deepfake_vs_real_image_detection"
 
 USER user
 
