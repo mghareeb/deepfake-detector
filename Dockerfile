@@ -2,7 +2,7 @@
 # Multi-stage: build React frontend, then serve everything from FastAPI.
 
 # ── Stage 1: build frontend ────────────────────────────────────
-FROM node:18-slim AS frontend-build
+FROM node:20-slim AS frontend-build
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
