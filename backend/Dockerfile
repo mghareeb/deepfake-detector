@@ -34,8 +34,7 @@ RUN mkdir -p /home/user/.cache/huggingface weights && \
 
 ENV HF_HOME=/home/user/.cache/huggingface \
     TRANSFORMERS_CACHE=/home/user/.cache/huggingface \
-    HF_MODEL_REPO="your-username/deepfake-efficientnet-b4" \
-    HF_MODEL_FILE="efficientnet_b4_deepfake.pth"
+    HF_DEEPFAKE_MODEL="prithivMLmods/Deep-Fake-Detector-Model"
 
 USER user
 

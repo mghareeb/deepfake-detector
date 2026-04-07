@@ -1,3 +1,13 @@
+---
+title: Deepfake Detector
+emoji: 🔍
+colorFrom: blue
+colorTo: red
+sdk: docker
+app_port: 7860
+pinned: false
+---
+
 # Deepfake Detector
 
 AI-powered deepfake image detection using EfficientNet-B4 with Grad-CAM visualization.
