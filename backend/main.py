@@ -14,7 +14,7 @@ MAX_SIZE = 10 * 1024 * 1024  # 10 MB
 
 class PredictionResponse(BaseModel):
     score: float            # ensemble fake probability (0-1)
-    pixel_score: float      # EfficientNet pixel-domain score
+    pixel_score: float      # HF deepfake model pixel-domain score
     freq_score: float       # FFT frequency-domain score (blended with landmark)
     landmark_score: float   # face landmark consistency score (0=consistent, 1=anomalous)
     skin_score: float       # skin texture uniformity (0=natural, 1=GAN-like smooth)
