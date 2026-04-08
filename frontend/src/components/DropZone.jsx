@@ -53,7 +53,7 @@ export default function DropZone({ onImageSelected, imagePreview, loading, onCle
         <input {...getInputProps()} />
 
         {imagePreview ? (
-          <img src={imagePreview} alt="Uploaded" className="w-full max-h-[400px] object-contain" />
+          <img src={imagePreview} alt="Uploaded" className="w-full max-h-[520px] object-contain p-2" />
         ) : (
           <div className="flex flex-col items-center gap-3 text-gray-500 py-10 px-6 text-center">
             <svg className="w-12 h-12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5">
