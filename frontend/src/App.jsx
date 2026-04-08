@@ -48,7 +48,7 @@ export default function App() {
   return (
     <div className="min-h-screen flex flex-col">
       {/* ── Hero ── */}
-      <header className="pt-14 pb-12 text-center px-4">
+      <header className="pt-6 pb-10 text-center px-4">
         {/* Logo */}
         <div className="flex justify-center mb-6">
           <div className="flex items-center gap-3">
@@ -82,7 +82,7 @@ export default function App() {
           </svg>
           ViT Deepfake Detection + FFT Analysis
         </div>
-        <h1 className="text-5xl sm:text-6xl font-extrabold tracking-tight bg-gradient-to-r from-white via-gray-200 to-gray-400 bg-clip-text text-transparent">
+        <h1 className="text-4xl sm:text-5xl font-extrabold tracking-tight bg-gradient-to-r from-white via-gray-200 to-gray-400 bg-clip-text text-transparent">
           Is this image real?
         </h1>
         <p className="mt-4 text-lg text-gray-400 max-w-xl mx-auto">
