@@ -329,6 +329,18 @@ class _GradCAM:
         target_class: int = 1,
     ) -> str:
         """Return a base64-encoded PNG of the Grad-CAM heatmap overlaid on the image."""
+        try:
+            return self._generate_inner(pixel_values, original_image, target_class)
+        except Exception as exc:
+            print(f"[model] Grad-CAM failed ({exc}), returning blank heatmap", flush=True)
+            return _blank_heatmap(original_image)
+
+    def _generate_inner(
+        self,
+        pixel_values: torch.Tensor,
+        original_image: np.ndarray,
+        target_class: int = 1,
+    ) -> str:
         self.model.eval()
         inp = pixel_values.clone().requires_grad_(True)
 
@@ -339,7 +351,6 @@ class _GradCAM:
             logits[0, target_class].backward()
 
         if self.gradients is None or self.activations is None:
-            # Fallback: return a blank overlay
             return _blank_heatmap(original_image)
 
         acts = self.activations
