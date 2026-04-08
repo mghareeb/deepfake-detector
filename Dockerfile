@@ -6,6 +6,7 @@ FROM node:20-slim AS frontend-build
 WORKDIR /app
 COPY frontend/package.json frontend/package-lock.json* ./
 RUN npm install
+# v2: logo, favicon, badge text, image crop fix
 COPY frontend/ .
 RUN npm run build
 
