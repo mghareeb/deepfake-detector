@@ -17,7 +17,7 @@ from transformers import AutoImageProcessor, AutoModelForImageClassification, pi
 # Constants
 # ---------------------------------------------------------------------------
 HF_MODEL_ID = os.environ.get(
-    "HF_DEEPFAKE_MODEL", "dima806/deepfake_vs_real_image_detection"
+    "HF_DEEPFAKE_MODEL", "umm-maybe/AI-image-detector"
 )
 FACE_MARGIN = 0.3
 
@@ -519,7 +519,7 @@ def load_model() -> dict:
     # Discover the label that means "fake"
     label2id = getattr(model.config, "label2id", {})
     fake_idx = None
-    for label_name in ("fake", "Fake", "FAKE", "deepfake", "Deepfake", "1"):
+    for label_name in ("fake", "Fake", "FAKE", "deepfake", "Deepfake", "artificial", "ai", "1"):
         if label_name in label2id:
             fake_idx = label2id[label_name]
             break
@@ -598,14 +598,14 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
     pixel_score = 0.5  # default
     for item in pipe_results:
         label_lower = item["label"].lower()
-        if "fake" in label_lower:
+        if any(kw in label_lower for kw in ("fake", "artificial", "deepfake", "ai")):
             pixel_score = item["score"]
             break
     else:
-        # No "fake" label found — use 1 - real_score
+        # No fake/artificial label found — use 1 - real/human score
         for item in pipe_results:
             label_lower = item["label"].lower()
-            if "real" in label_lower:
+            if any(kw in label_lower for kw in ("real", "human", "hum")):
                 pixel_score = 1.0 - item["score"]
                 break
     print(f"[model] pixel_score(fake): {pixel_score:.4f}", flush=True)

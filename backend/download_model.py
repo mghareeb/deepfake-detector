@@ -16,7 +16,7 @@ import sys
 
 
 HF_MODEL_ID = os.environ.get(
-    "HF_DEEPFAKE_MODEL", "dima806/deepfake_vs_real_image_detection"
+    "HF_DEEPFAKE_MODEL", "umm-maybe/AI-image-detector"
 )
 
 
