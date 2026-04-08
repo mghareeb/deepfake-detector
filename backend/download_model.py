@@ -1,34 +1,29 @@
-"""Pre-download HuggingFace model on startup so first request isn't slow.
+"""Pre-download HuggingFace models on startup so first request isn't slow.
 
 The transformers library caches models automatically under HF_HOME.
 This script just triggers that download eagerly.
-
-Environment variables
----------------------
-HF_DEEPFAKE_MODEL : str
-    HuggingFace Hub model ID (default: "Wvolf/ViT_Deepfake_Detection").
-HF_HOME : str
-    Hugging Face cache root (default: ~/.cache/huggingface).
 """
 
 import os
 import sys
 
 
-HF_MODEL_ID = os.environ.get(
-    "HF_DEEPFAKE_MODEL", "buildborderless/CommunityForensics-DeepfakeDet-ViT"
+HF_MODEL_1 = os.environ.get(
+    "HF_DEEPFAKE_MODEL", "dima806/deepfake_vs_real_image_detection"
 )
+HF_MODEL_2 = "buildborderless/CommunityForensics-DeepfakeDet-ViT"
 
 
 def download_weights() -> None:
-    """Pre-download model and processor from HuggingFace Hub."""
+    """Pre-download both models and processors from HuggingFace Hub."""
     try:
         from transformers import AutoImageProcessor, AutoModelForImageClassification
 
-        print(f"[download_model] Ensuring model cached: {HF_MODEL_ID}")
-        AutoImageProcessor.from_pretrained(HF_MODEL_ID)
-        AutoModelForImageClassification.from_pretrained(HF_MODEL_ID)
-        print(f"[download_model] Model ready: {HF_MODEL_ID}")
+        for model_id in (HF_MODEL_1, HF_MODEL_2):
+            print(f"[download_model] Ensuring model cached: {model_id}")
+            AutoImageProcessor.from_pretrained(model_id, trust_remote_code=True)
+            AutoModelForImageClassification.from_pretrained(model_id, trust_remote_code=True)
+            print(f"[download_model] Model ready: {model_id}")
 
     except Exception as exc:
         print(

@@ -17,8 +17,9 @@ from transformers import AutoImageProcessor, AutoModelForImageClassification, pi
 # Constants
 # ---------------------------------------------------------------------------
 HF_MODEL_ID = os.environ.get(
-    "HF_DEEPFAKE_MODEL", "buildborderless/CommunityForensics-DeepfakeDet-ViT"
+    "HF_DEEPFAKE_MODEL", "dima806/deepfake_vs_real_image_detection"
 )
+HF_MODEL_ID_2 = "buildborderless/CommunityForensics-DeepfakeDet-ViT"
 FACE_MARGIN = 0.3
 
 # Default ensemble weights (no face detected — full image)
@@ -503,6 +504,24 @@ def _frequency_score(image_np: np.ndarray) -> float:
 
 
 # ---------------------------------------------------------------------------
+# Pipeline score extraction
+# ---------------------------------------------------------------------------
+
+def _extract_fake_score(pipe_results: list) -> float:
+    """Extract P(fake) from a pipeline's label-score list."""
+    for item in pipe_results:
+        label_lower = item["label"].lower()
+        if any(kw in label_lower for kw in ("fake", "artificial", "deepfake", "ai", "label_1")):
+            return item["score"]
+    # No fake label found — use 1 - real score
+    for item in pipe_results:
+        label_lower = item["label"].lower()
+        if any(kw in label_lower for kw in ("real", "human", "hum", "label_0")):
+            return 1.0 - item["score"]
+    return 0.5
+
+
+# ---------------------------------------------------------------------------
 # Model lifecycle
 # ---------------------------------------------------------------------------
 
@@ -514,50 +533,52 @@ def load_model() -> dict:
     """
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-    print(f"[model] Loading HuggingFace model: {HF_MODEL_ID}")
-    processor = AutoImageProcessor.from_pretrained(HF_MODEL_ID, trust_remote_code=True)
-    # Fix image size for models that expect specific dimensions (e.g. 384x384)
-    if hasattr(processor, "size"):
-        model_size = 384  # ViT-base patch16 = 384
-        processor.size = {"height": model_size, "width": model_size}
-        if hasattr(processor, "crop_size"):
-            processor.crop_size = {"height": model_size, "width": model_size}
-    model = AutoModelForImageClassification.from_pretrained(HF_MODEL_ID, trust_remote_code=True)
-    model.eval()
-    model.to(device)
+    # --- Model 1: dima806 (excellent at confirming real photos) ---
+    print(f"[model] Loading primary model: {HF_MODEL_ID}")
+    pipe1 = pipeline("image-classification", model=HF_MODEL_ID, device=device)
+    print(f"[model] Model 1 labels: {pipe1.model.config.id2label}")
 
-    # Create a pipeline — override image_processor to use our fixed one
-    pipe = pipeline(
-        "image-classification",
-        model=model,
-        image_processor=processor,
-        device=device,
-    )
+    # --- Model 2: CommunityForensics (good at catching StyleGAN fakes) ---
+    print(f"[model] Loading secondary model: {HF_MODEL_ID_2}")
+    proc2 = AutoImageProcessor.from_pretrained(HF_MODEL_ID_2, trust_remote_code=True)
+    proc2.size = {"height": 384, "width": 384}
+    if hasattr(proc2, "crop_size"):
+        proc2.crop_size = {"height": 384, "width": 384}
+    model2 = AutoModelForImageClassification.from_pretrained(HF_MODEL_ID_2, trust_remote_code=True)
+    model2.eval()
+    model2.to(device)
+    pipe2 = pipeline("image-classification", model=model2, image_processor=proc2, device=device)
+    print(f"[model] Model 2 labels: {model2.config.id2label}")
 
-    # Discover the label that means "fake"
-    label2id = getattr(model.config, "label2id", {})
+    # Use model 1 for Grad-CAM (ViT architecture)
+    processor = AutoImageProcessor.from_pretrained(HF_MODEL_ID)
+    model1 = AutoModelForImageClassification.from_pretrained(HF_MODEL_ID)
+    model1.eval()
+    model1.to(device)
+
+    # Discover fake index for model 1
+    label2id = getattr(model1.config, "label2id", {})
     fake_idx = None
     for label_name in ("fake", "Fake", "FAKE", "deepfake", "Deepfake", "artificial", "ai", "1"):
         if label_name in label2id:
             fake_idx = label2id[label_name]
             break
     if fake_idx is None:
-        # CommunityForensics model: LABEL_0=real, LABEL_1=fake
         fake_idx = 1
-    print(f"[model] Labels: {model.config.id2label}, fake_idx={fake_idx}")
 
-    target_layer = _find_target_layer(model)
+    target_layer = _find_target_layer(model1)
     print(f"[model] Grad-CAM target layer: {target_layer.__class__.__name__}")
-    gradcam = _GradCAM(model, target_layer)
+    gradcam = _GradCAM(model1, target_layer)
 
     global _model_state
     _model_state = {
-        "model": model,
+        "model": model1,
         "processor": processor,
         "device": device,
         "gradcam": gradcam,
         "fake_idx": fake_idx,
-        "pipe": pipe,
+        "pipe1": pipe1,
+        "pipe2": pipe2,
     }
     return _model_state
 
@@ -594,7 +615,8 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
     device: torch.device = state["device"]
     gradcam: _GradCAM = state["gradcam"]
     fake_idx: int = state["fake_idx"]
-    pipe = state["pipe"]
+    pipe1 = state["pipe1"]
+    pipe2 = state["pipe2"]
 
     # --- face detection & crop ------------------------------------------------
     cropped, face_detected = _detect_and_crop_face(image_np)
@@ -603,33 +625,27 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
     display_size = 384
     display_image = cv2.resize(cropped, (display_size, display_size))
 
-    # --- pixel-domain score (HF deepfake model) -------------------------------
-    # Feed the FULL image to the model (not the cropped face) because
-    # deepfake detection models are trained on full images and lose
-    # accuracy when given tightly-cropped face regions.
+    # --- pixel-domain score (dual-model ensemble) -----------------------------
     pil_image = Image.fromarray(image_np)
 
-    # Use pipeline for reliable label-based scoring
-    pipe_results = pipe(pil_image)
-    print(f"[model] RAW: {pipe_results}", flush=True)
+    # Model 1: dima806 — excellent at confirming real (low false positive rate)
+    r1 = pipe1(pil_image)
+    print(f"[model] Model1 RAW: {r1}", flush=True)
+    score1 = _extract_fake_score(r1)
 
-    # Extract fake score from pipeline results
-    pixel_score = 0.5  # default
-    for item in pipe_results:
-        label_lower = item["label"].lower()
-        if any(kw in label_lower for kw in ("fake", "artificial", "deepfake", "ai", "label_1")):
-            pixel_score = item["score"]
-            break
-    else:
-        # No fake/artificial label found — use 1 - real/human score
-        for item in pipe_results:
-            label_lower = item["label"].lower()
-            if any(kw in label_lower for kw in ("real", "human", "hum", "label_0")):
-                pixel_score = 1.0 - item["score"]
-                break
-    print(f"[model] pixel_score(fake): {pixel_score:.4f}", flush=True)
+    # Model 2: CommunityForensics — better at catching StyleGAN fakes
+    r2 = pipe2(pil_image)
+    print(f"[model] Model2 RAW: {r2}", flush=True)
+    score2 = _extract_fake_score(r2)
 
-    # Also run through the model directly for Grad-CAM
+    # Ensemble: use the MAX of both models.
+    # If either model is confident it's fake, trust that signal.
+    # This way dima806 keeps real photos scoring low, while
+    # CommunityForensics catches fakes that dima806 misses.
+    pixel_score = max(score1, score2)
+    print(f"[model] score1={score1:.4f}, score2={score2:.4f}, pixel_score=max={pixel_score:.4f}", flush=True)
+
+    # Run through model 1 for Grad-CAM
     inputs = processor(images=pil_image, return_tensors="pt")
     pixel_values = inputs["pixel_values"].to(device)
 
