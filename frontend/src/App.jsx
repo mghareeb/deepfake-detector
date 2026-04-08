@@ -12,7 +12,18 @@ export default function App() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState(null);
 
+  const MAX_FILE_SIZE = 10 * 1024 * 1024; // 10 MB
+
   const handleImageSelected = useCallback(async (file) => {
+    // Handle rejected files from DropZone
+    if (file._rejected) {
+      setError(file.message);
+      return;
+    }
+    if (file.size > MAX_FILE_SIZE) {
+      setError(`Image is too large (${(file.size / 1024 / 1024).toFixed(1)} MB). Maximum size is 10 MB.`);
+      return;
+    }
     setImagePreview(URL.createObjectURL(file));
     setPrediction(null);
     setError(null);

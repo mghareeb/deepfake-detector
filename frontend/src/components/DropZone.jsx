@@ -10,8 +10,24 @@ export default function DropZone({ onImageSelected, imagePreview, loading, onCle
     [onImageSelected],
   );
 
+  const onDropRejected = useCallback(
+    (rejections) => {
+      if (rejections.length > 0) {
+        const err = rejections[0].errors[0];
+        if (err.code === "file-too-large") {
+          const sizeMB = (rejections[0].file.size / 1024 / 1024).toFixed(1);
+          onImageSelected({ _rejected: true, message: `Image is too large (${sizeMB} MB). Maximum size is 10 MB.` });
+        } else if (err.code === "file-invalid-type") {
+          onImageSelected({ _rejected: true, message: "Invalid file type. Please upload JPEG, PNG, or WebP." });
+        }
+      }
+    },
+    [onImageSelected],
+  );
+
   const { getRootProps, getInputProps, isDragActive } = useDropzone({
     onDrop,
+    onDropRejected,
     accept: ACCEPT,
     maxSize: MAX_SIZE,
     multiple: false,
