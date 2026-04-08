@@ -34,7 +34,7 @@ RUN mkdir -p /home/user/.cache/huggingface weights && \
 
 ENV HF_HOME=/home/user/.cache/huggingface \
     TRANSFORMERS_CACHE=/home/user/.cache/huggingface \
-    HF_DEEPFAKE_MODEL="umm-maybe/AI-image-detector"
+    HF_DEEPFAKE_MODEL="buildborderless/CommunityForensics-DeepfakeDet-ViT"
 
 USER user
 

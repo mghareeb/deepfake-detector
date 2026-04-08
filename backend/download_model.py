@@ -16,7 +16,7 @@ import sys
 
 
 HF_MODEL_ID = os.environ.get(
-    "HF_DEEPFAKE_MODEL", "umm-maybe/AI-image-detector"
+    "HF_DEEPFAKE_MODEL", "buildborderless/CommunityForensics-DeepfakeDet-ViT"
 )
 
 

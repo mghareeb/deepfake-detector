@@ -17,7 +17,7 @@ from transformers import AutoImageProcessor, AutoModelForImageClassification, pi
 # Constants
 # ---------------------------------------------------------------------------
 HF_MODEL_ID = os.environ.get(
-    "HF_DEEPFAKE_MODEL", "umm-maybe/AI-image-detector"
+    "HF_DEEPFAKE_MODEL", "buildborderless/CommunityForensics-DeepfakeDet-ViT"
 )
 FACE_MARGIN = 0.3
 
@@ -515,15 +515,22 @@ def load_model() -> dict:
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
     print(f"[model] Loading HuggingFace model: {HF_MODEL_ID}")
-    processor = AutoImageProcessor.from_pretrained(HF_MODEL_ID)
-    model = AutoModelForImageClassification.from_pretrained(HF_MODEL_ID)
+    processor = AutoImageProcessor.from_pretrained(HF_MODEL_ID, trust_remote_code=True)
+    # Fix image size for models that expect specific dimensions (e.g. 384x384)
+    if hasattr(processor, "size"):
+        model_size = 384  # ViT-base patch16 = 384
+        processor.size = {"height": model_size, "width": model_size}
+        if hasattr(processor, "crop_size"):
+            processor.crop_size = {"height": model_size, "width": model_size}
+    model = AutoModelForImageClassification.from_pretrained(HF_MODEL_ID, trust_remote_code=True)
     model.eval()
     model.to(device)
 
-    # Create a pipeline for easy label-based scoring
+    # Create a pipeline — override image_processor to use our fixed one
     pipe = pipeline(
         "image-classification",
-        model=HF_MODEL_ID,
+        model=model,
+        image_processor=processor,
         device=device,
     )
 
@@ -535,6 +542,7 @@ def load_model() -> dict:
             fake_idx = label2id[label_name]
             break
     if fake_idx is None:
+        # CommunityForensics model: LABEL_0=real, LABEL_1=fake
         fake_idx = 1
     print(f"[model] Labels: {model.config.id2label}, fake_idx={fake_idx}")
 
@@ -609,14 +617,14 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
     pixel_score = 0.5  # default
     for item in pipe_results:
         label_lower = item["label"].lower()
-        if any(kw in label_lower for kw in ("fake", "artificial", "deepfake", "ai")):
+        if any(kw in label_lower for kw in ("fake", "artificial", "deepfake", "ai", "label_1")):
             pixel_score = item["score"]
             break
     else:
         # No fake/artificial label found — use 1 - real/human score
         for item in pipe_results:
             label_lower = item["label"].lower()
-            if any(kw in label_lower for kw in ("real", "human", "hum")):
+            if any(kw in label_lower for kw in ("real", "human", "hum", "label_0")):
                 pixel_score = 1.0 - item["score"]
                 break
     print(f"[model] pixel_score(fake): {pixel_score:.4f}", flush=True)
