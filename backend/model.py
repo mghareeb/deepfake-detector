@@ -11,7 +11,7 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 from PIL import Image
-from transformers import AutoImageProcessor, AutoModelForImageClassification
+from transformers import AutoImageProcessor, AutoModelForImageClassification, pipeline
 
 # ---------------------------------------------------------------------------
 # Constants
@@ -509,16 +509,21 @@ def load_model() -> dict:
     model.eval()
     model.to(device)
 
+    # Create a pipeline for easy label-based scoring
+    pipe = pipeline(
+        "image-classification",
+        model=HF_MODEL_ID,
+        device=device,
+    )
+
     # Discover the label that means "fake"
     label2id = getattr(model.config, "label2id", {})
-    # Common label names across deepfake detection models
     fake_idx = None
     for label_name in ("fake", "Fake", "FAKE", "deepfake", "Deepfake", "1"):
         if label_name in label2id:
             fake_idx = label2id[label_name]
             break
     if fake_idx is None:
-        # Fallback: assume index 1 is fake (most common convention)
         fake_idx = 1
     print(f"[model] Labels: {model.config.id2label}, fake_idx={fake_idx}")
 
@@ -533,6 +538,7 @@ def load_model() -> dict:
         "device": device,
         "gradcam": gradcam,
         "fake_idx": fake_idx,
+        "pipe": pipe,
     }
     return _model_state
 
@@ -569,6 +575,7 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
     device: torch.device = state["device"]
     gradcam: _GradCAM = state["gradcam"]
     fake_idx: int = state["fake_idx"]
+    pipe = state["pipe"]
 
     # --- face detection & crop ------------------------------------------------
     cropped, face_detected = _detect_and_crop_face(image_np)
@@ -582,15 +589,30 @@ def _run_pipeline(image_np: np.ndarray) -> dict:
     # deepfake detection models are trained on full images and lose
     # accuracy when given tightly-cropped face regions.
     pil_image = Image.fromarray(image_np)
+
+    # Use pipeline for reliable label-based scoring
+    pipe_results = pipe(pil_image)
+    print(f"[model] RAW: {pipe_results}", flush=True)
+
+    # Extract fake score from pipeline results
+    pixel_score = 0.5  # default
+    for item in pipe_results:
+        label_lower = item["label"].lower()
+        if "fake" in label_lower:
+            pixel_score = item["score"]
+            break
+    else:
+        # No "fake" label found — use 1 - real_score
+        for item in pipe_results:
+            label_lower = item["label"].lower()
+            if "real" in label_lower:
+                pixel_score = 1.0 - item["score"]
+                break
+    print(f"[model] pixel_score(fake): {pixel_score:.4f}", flush=True)
+
+    # Also run through the model directly for Grad-CAM
     inputs = processor(images=pil_image, return_tensors="pt")
     pixel_values = inputs["pixel_values"].to(device)
-
-    with torch.no_grad():
-        outputs = model(pixel_values=pixel_values)
-        logits = outputs.logits
-
-    probs = F.softmax(logits, dim=1)[0]
-    pixel_score = float(probs[fake_idx].item())  # P(fake)
 
     # --- Grad-CAM heatmap -----------------------------------------------------
     heatmap_b64 = gradcam.generate(pixel_values, display_image, target_class=fake_idx)
